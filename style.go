@@ -2,6 +2,7 @@ package lipgloss
 
 import (
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/muesli/reflow/truncate"
@@ -75,15 +76,18 @@ const (
 // A set of properties.
 type rules map[propKey]interface{}
 
-// NewStyle returns a new, empty Style.  While it's syntactic sugar for the
-// Style{} primitive, it's recommended to use this function for creating styles
-// incase the underlying implementation changes.
+// NewStyle returns a new, empty Style. Use this rather than a Style{}
+// primitive to ensure the style is properly initialized.
 func NewStyle() Style {
-	return Style{}
+	return Style{
+		mtx: &sync.RWMutex{},
+	}
 }
 
 // Style contains a set of rules that comprise a style as a whole.
+// It is safe for concurrent use by multiple goroutines.
 type Style struct {
+	mtx   *sync.RWMutex
 	rules map[propKey]interface{}
 	value string
 }
@@ -94,12 +98,18 @@ type Style struct {
 // as when using fmt.Sprintf. You can also simply define a style and render out
 // strings directly with Style.Render.
 func (s Style) SetString(str string) Style {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+
 	s.value = str
 	return s
 }
 
 // Value returns the raw, unformatted, underlying string value for this style.
 func (s Style) Value() string {
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+
 	return s.value
 }
 
@@ -107,11 +117,17 @@ func (s Style) Value() string {
 // on the rules in this style. An underlying string value must be set with
 // Style.SetString prior to using this method.
 func (s Style) String() string {
-	return s.Render(s.value)
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+
+	return s.render(s.value)
 }
 
 // Copy returns a copy of this style, including any underlying string values.
 func (s Style) Copy() Style {
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+
 	o := NewStyle()
 	o.init()
 	for k, v := range s.rules {
@@ -127,6 +143,9 @@ func (s Style) Copy() Style {
 //
 // Margins, padding, and underlying string values are not inherited.
 func (s Style) Inherit(i Style) Style {
+	i.mtx.RLock()
+	defer i.mtx.RUnlock()
+
 	s.init()
 
 	for k, v := range i.rules {
@@ -154,6 +173,14 @@ func (s Style) Inherit(i Style) Style {
 
 // Render applies the defined style formatting to a given string.
 func (s Style) Render(str string) string {
+	s.mtx.RLock()
+	defer s.mtx.RUnlock()
+
+	return s.render(str)
+}
+
+// Internal render method, mutex must be held by caller.
+func (s Style) render(str string) string {
 	var (
 		te           termenv.Style
 		teSpace      termenv.Style
